@@ -36,6 +36,20 @@ export const setupHandlers = (server) => {
     });
     // Handle resource content requests
     server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+        // for resources
+        const receivedUri = request.params.uri;
+        const requestedResource = resources.find(resource => resource.uri === receivedUri);
+        if (requestedResource) {
+            return {
+                contents: [
+                    {
+                        uri: requestedResource.uri,
+                        text: requestedResource.description
+                    }
+                ]
+            };
+        }
+        // for resource templates
         // parse github resource uris
         const repoInfoRegex = /^github:\/\/repo\/([^\/]+)\/([^\/]+)/;
         const issuesRegex = /^github:\/\/issues\/([^\/]+)\/([^\/]+)/;
