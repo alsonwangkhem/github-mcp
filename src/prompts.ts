@@ -16,7 +16,14 @@ export const prompts: Prompt[] = [
       - Key contributors and their contributions
       
       Please analyze the repository based on the information available.
-    `
+    `,
+    arguments: [
+        {
+            name: "uri",
+            description: "uri of the prompt",
+            required: true
+        }
+    ]
   },
   {
     uri: "github://prompts/issue-summary",
@@ -30,7 +37,14 @@ export const prompts: Prompt[] = [
       - Any critical issues that should be prioritized
       - How long issues have been open on average
       - Suggestions for the repository maintainers
-    `
+    `,
+    arguments: [
+        {
+            name: "uri",
+            description: "uri of the prompt",
+            required: true
+        }
+    ]
   },
   {
     uri: "github://prompts/code-review",
@@ -46,7 +60,14 @@ export const prompts: Prompt[] = [
       - Any potential issues, bugs, or improvements
       - Suggestions for better practices or optimizations
       - Comments on code style and organization
-    `
+    `,
+    arguments: [
+        {
+            name: "uri",
+            description: "uri of the prompt",
+            required: true
+        }
+    ]
   }
 ];
 

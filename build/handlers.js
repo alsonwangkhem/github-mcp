@@ -1,7 +1,7 @@
 import dotenv from "dotenv";
 import { ListResourcesRequestSchema, ReadResourceRequestSchema, ListResourceTemplatesRequestSchema, ListPromptsRequestSchema, GetPromptRequestSchema, } from "@modelcontextprotocol/sdk/types.js";
 import { resources } from "./resources.js";
-import { resourceTemplates, } from "./resource-templates.js";
+import { resourceTemplates } from "./resource-templates.js";
 import { prompts } from "./prompts.js";
 import { Octokit } from "octokit";
 dotenv.config();
@@ -11,6 +11,8 @@ if (!process.env.GITHUB_TOKEN) {
 const octokit = new Octokit({
     auth: process.env.GITHUB_TOKEN,
 });
+const { data: { login }, } = await octokit.rest.users.getAuthenticated();
+console.log("logged in", login);
 export const setupHandlers = (server) => {
     // List available resources
     server.setRequestHandler(ListResourcesRequestSchema, () => {
@@ -28,6 +30,9 @@ export const setupHandlers = (server) => {
     });
     // Get a specific prompt by URI
     server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+        if (!request.params || !request.params.uri) {
+            throw new Error("Missing URI parameter in prompt request");
+        }
         const prompt = prompts.find((p) => p.uri === request.params.uri);
         if (!prompt) {
             throw new Error(`Prompt not found: ${request.params.uri}`);
@@ -38,23 +43,23 @@ export const setupHandlers = (server) => {
     server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
         // for resources
         const receivedUri = request.params.uri;
-        const requestedResource = resources.find(resource => resource.uri === receivedUri);
+        const requestedResource = resources.find((resource) => resource.uri === receivedUri);
         if (requestedResource) {
             return {
                 contents: [
                     {
                         uri: requestedResource.uri,
-                        text: requestedResource.description
-                    }
-                ]
+                        text: requestedResource.description,
+                    },
+                ],
             };
         }
         // for resource templates
         // parse github resource uris
-        const repoInfoRegex = /^github:\/\/repo\/([^\/]+)\/([^\/]+)/;
-        const issuesRegex = /^github:\/\/issues\/([^\/]+)\/([^\/]+)/;
-        const prRegex = /^github:\/\/pr\/([^\/]+)\/([^\/]+)/;
-        const contentsRegex = /^github:\/\/contents\/([^\/]+)\/([^\/]+)\/(.+)/;
+        const repoInfoRegex = /^github:\/\/repo\/([^\/]+)\/([^\/]+)$/;
+        const issuesRegex = /^github:\/\/issues\/([^\/]+)\/([^\/]+)$/;
+        const prRegex = /^github:\/\/pr\/([^\/]+)\/([^\/]+)$/;
+        const contentsRegex = /^github:\/\/contents\/([^\/]+)\/([^\/]+)(?:\/(.*))?$/;
         try {
             // handle repo info requests
             const repoMatch = request.params.uri.match(repoInfoRegex);
@@ -68,7 +73,7 @@ export const setupHandlers = (server) => {
                     contents: [
                         {
                             uri: request.params.uri,
-                            json: {
+                            text: JSON.stringify({
                                 name: data.name,
                                 full_name: data.full_name,
                                 description: data.description,
@@ -78,7 +83,7 @@ export const setupHandlers = (server) => {
                                 language: data.language,
                                 created_at: data.created_at,
                                 updated_at: data.updated_at,
-                            },
+                            }),
                         },
                     ],
                 };
@@ -97,14 +102,14 @@ export const setupHandlers = (server) => {
                     contents: [
                         {
                             uri: request.params.uri,
-                            json: data.map((issue) => ({
+                            text: JSON.stringify(data.map((issue) => ({
                                 number: issue.number,
                                 title: issue.title,
                                 state: issue.state,
                                 created_at: issue.created_at,
                                 updated_at: issue.updated_at,
                                 user: issue.user?.login,
-                            })),
+                            }))),
                         },
                     ],
                 };
@@ -123,14 +128,14 @@ export const setupHandlers = (server) => {
                     contents: [
                         {
                             uri: request.params.uri,
-                            json: data.map((pr) => ({
+                            text: JSON.stringify(data.map((pr) => ({
                                 number: pr.number,
                                 title: pr.title,
                                 state: pr.state,
                                 created_at: pr.created_at,
                                 updated_at: pr.updated_at,
                                 user: pr?.user?.login,
-                            })),
+                            }))),
                         },
                     ],
                 };
@@ -138,69 +143,64 @@ export const setupHandlers = (server) => {
             // Handle file/directory contents requests
             const contentsMatch = request.params.uri.match(contentsRegex);
             if (contentsMatch) {
-                const [_, owner, repo, path] = contentsMatch;
-                const { data } = await octokit.rest.repos.getContent({
-                    owner,
-                    repo,
-                    path,
-                    mediaType: { format: 'raw' }
-                });
-                if (typeof data === 'string') {
-                    return {
-                        contents: [{
-                                uri: request.params.uri,
-                                text: data
-                            }]
-                    };
+                const [_, owner, repo, path = ""] = contentsMatch;
+                try {
+                    // First, get content info without specifying raw format
+                    const { data } = await octokit.rest.repos.getContent({
+                        owner,
+                        repo,
+                        path,
+                    });
+                    // If it's a directory (array of items)
+                    if (Array.isArray(data)) {
+                        return {
+                            contents: [
+                                {
+                                    uri: request.params.uri,
+                                    text: JSON.stringify(data.map((item) => ({
+                                        name: item.name,
+                                        type: item.type,
+                                        path: item.path,
+                                        size: item.size,
+                                        url: item.html_url,
+                                    }))),
+                                },
+                            ],
+                        };
+                    }
+                    // If it's a file
+                    else {
+                        // Make a second request for the raw file content
+                        if (data.type === "file") {
+                            const fileResponse = await octokit.rest.repos.getContent({
+                                owner,
+                                repo,
+                                path,
+                                mediaType: { format: "raw" },
+                            });
+                            return {
+                                contents: [
+                                    {
+                                        uri: request.params.uri,
+                                        text: typeof fileResponse.data === "string"
+                                            ? fileResponse.data
+                                            : Buffer.from(data.content, "base64").toString("utf8"),
+                                    },
+                                ],
+                            };
+                        }
+                    }
                 }
-                else if (Array.isArray(data)) { // Directory
-                    return {
-                        contents: [{
-                                uri: request.params.uri,
-                                json: data.map(item => ({
-                                    name: item.name,
-                                    type: item.type,
-                                    path: item.path
-                                }))
-                            }]
-                    };
+                catch (error) {
+                    console.error("GitHub API Error:", error);
+                    throw new Error(`Failed to fetch GitHub data: 1`);
                 }
-                // // If it's a file
-                // if (!Array.isArray(data)) {
-                //   const fileData = data as { content: string };
-                //   const content = Buffer.from(fileData.content, "base64").toString(
-                //     "utf8"
-                //   );
-                //   return {
-                //     contents: [
-                //       {
-                //         uri: request.params.uri,
-                //         text: content,
-                //       },
-                //     ],
-                //   };
-                // }
-                // // If it's a directory
-                // return {
-                //   contents: [
-                //     {
-                //       uri: request.params.uri,
-                //       json: data.map((item) => ({
-                //         name: item.name,
-                //         path: item.path,
-                //         type: item.type,
-                //         size: item.size,
-                //         url: item.html_url,
-                //       })),
-                //     },
-                //   ],
-                // };
             }
             throw new Error("Resource not found");
         }
         catch (error) {
             console.error("GitHub API Error:", error);
-            throw new Error(`Failed to fetch GitHub data:`);
+            throw new Error(`Failed to fetch GitHub data: 2`);
         }
     });
 };
